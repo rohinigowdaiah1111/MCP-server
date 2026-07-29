@@ -56,7 +56,7 @@ This opens your browser to sign in to Google and grant access to Gmail (compose/
 npm start
 ```
 
-By default (`MCP_TRANSPORT=stdio`) the server communicates over stdio, so normally you won't run it directly — instead point your MCP client (e.g. Cursor) at it. To host it remotely instead (e.g. on Railway), see [`deployment-plan.md`](./deployment-plan.md) and the "Remote (HTTP) hosting" section below.
+By default (`MCP_TRANSPORT=stdio`) the server communicates over stdio, so normally you won't run it directly — instead point your MCP client (e.g. Cursor) at it. To host it remotely instead (e.g. on Render), see [`deployment-plan.md`](./deployment-plan.md) and the "Remote (HTTP) hosting" section below.
 
 ## 5. Connect it to Cursor
 
@@ -93,7 +93,7 @@ Remote (HTTP) transport — only relevant when hosting this server remotely inst
 | Variable | Default | Purpose |
 |---|---|---|
 | `MCP_TRANSPORT` | `stdio` | `"stdio"` for local Cursor usage, or `"http"` to bind an HTTP server instead (for remote hosting) |
-| `PORT` | `8080` | Port the HTTP transport binds to (`0.0.0.0`). Railway injects this automatically — don't set it yourself there. |
+| `PORT` | `8080` | Port the HTTP transport binds to (`0.0.0.0`). Render (default `10000`) or Railway injects this automatically — don't set it yourself there. |
 | `MCP_AUTH_TOKEN` | _(required if `MCP_TRANSPORT=http`)_ | Shared secret remote clients must send as `Authorization: Bearer <token>` to `/mcp`, and `?token=<token>` to `/authorize`. The server refuses to start in http mode without it. |
 
 Optional:
@@ -140,7 +140,7 @@ Setting `MCP_TRANSPORT=http` switches the entrypoint to bind an HTTP server (ins
 
 This mode is stateless: each `/mcp` request gets its own short-lived MCP server + transport pair (per the SDK's guidance for stateless HTTP hosting), so a single process can serve concurrent requests without cross-talk. The in-memory rate limiter and metrics are still per-process, so run a single instance (see `deployment-plan.md`, Phase 11).
 
-Full step-by-step Railway deployment instructions (Volumes for token persistence, environment variables, redirect URI updates, CI, etc.) are in [`deployment-plan.md`](./deployment-plan.md).
+Full step-by-step Render deployment instructions (persistent Disk for token storage, environment variables, redirect URI updates, CI, etc.) are in [`deployment-plan.md`](./deployment-plan.md). `render.yaml` at the repo root declares the service, disk, and env vars for a one-click Render Blueprint deploy (a `railway.json` is also kept in the repo if you'd rather deploy to Railway instead).
 
 ## Project structure
 
@@ -159,4 +159,7 @@ src/
   mcpServer.ts     - createMcpServer(): tool registry + shared logging/rate-limit/error middleware (used by both transports)
   httpServer.ts    - Streamable HTTP transport: /health, /mcp (bearer-token gated), /authorize, OAuth callback
   index.ts         - entrypoint; picks stdio or HTTP transport based on MCP_TRANSPORT
+
+render.yaml        - Render Blueprint (web service, persistent disk, env vars) — see deployment-plan.md
+railway.json       - equivalent config for Railway, kept for reference
 ```

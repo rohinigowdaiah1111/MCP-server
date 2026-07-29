@@ -1,0 +1,40 @@
+services:
+  - type: web
+    name: gmail-docs-mcp-server
+    runtime: node
+    # "free" cannot attach a persistent disk (see below) — every restart/spin-down
+    # would wipe tokens.json and force re-authorization. Use "starter" or above.
+    plan: starter
+    region: oregon
+    branch: main
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /health
+    autoDeployTrigger: commit
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: MCP_TRANSPORT
+        value: http
+      - key: MCP_SERVER_NAME
+        value: google-workspace-mcp-server
+      - key: LOG_LEVEL
+        value: info
+      - key: GOOGLE_TOKEN_STORAGE_PATH
+        value: /data/tokens.json
+      # Secrets — left unset here on purpose; set once in the Render dashboard
+      # (Environment tab) after the first deploy, per deployment-plan.md Phase 4.
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_REDIRECT_URI
+        sync: false
+      - key: MCP_AUTH_TOKEN
+        sync: false
+      - key: TOKEN_ENCRYPTION_KEY
+        sync: false
+    disk:
+      name: mcp-token-store
+      mountPath: /data
+      sizeGB: 1
