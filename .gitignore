@@ -1,0 +1,8 @@
+node_modules/
+dist/
+tokens.json
+token.json
+.token.key
+*.log
+.env
+credentials.json
