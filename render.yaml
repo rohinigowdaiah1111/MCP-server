@@ -7,7 +7,11 @@ services:
     plan: starter
     region: oregon
     branch: main
-    buildCommand: npm ci && npm run build
+    # --include=dev is required: NODE_ENV=production (set below, for the
+    # runtime) also applies during the build step on Render, which makes
+    # `npm ci` default to --omit=dev — silently skipping devDependencies
+    # (typescript, @types/node) and breaking the `npm run build` (tsc) step.
+    buildCommand: npm ci --include=dev && npm run build
     startCommand: npm start
     healthCheckPath: /health
     autoDeployTrigger: commit
