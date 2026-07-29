@@ -49,7 +49,7 @@ This plan assumes **Option A**.
       "$schema": "https://railway.com/railway.schema.json",
       "build": {
         "builder": "NIXPACKS",
-        "buildCommand": "npm ci && npm run build"
+        "buildCommand": "npm run build"
       },
       "deploy": {
         "startCommand": "npm start",
@@ -60,6 +60,8 @@ This plan assumes **Option A**.
       }
     }
     ```
+
+    **Note:** don't put `npm ci` (or `npm install`) in `buildCommand` — Nixpacks already runs it automatically in its own install phase (detected from `package-lock.json`), which sets up a `node_modules/.cache` mount for that step. Running `npm ci` again in the build phase collides with that mount and fails with `EBUSY: resource busy or locked, rmdir '/app/node_modules/.cache'` ([railwayapp/railpack#255](https://github.com/railwayapp/railpack/issues/255)). `buildCommand` should only contain the actual build step (`npm run build`).
 
 4. Attach a Volume (Phase 2) via the service's **Settings > Volumes**, mount path `/data`. **Do not** mount a volume at `/app` — that would hide your deployed code. *(manual — requires your Railway account)*
 5. ✅ Done: `package.json` now pins `"engines": { "node": ">=20" }` so Nixpacks doesn't have to guess the Node version.
