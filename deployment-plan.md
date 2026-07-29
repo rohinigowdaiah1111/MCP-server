@@ -4,6 +4,8 @@ This plan covers deploying the MCP server in `BuildMCP` (see [`README.md`](./REA
 
 > **Note:** this project previously targeted Railway (`railway.json`, still present in the repo). This plan supersedes that for Render; `render.yaml` is the Render equivalent of `railway.json`. The two are independent — you can deploy to either platform without deleting the other's config file.
 
+> **Status: deployed.** The service is live at `https://mcp-server-ziee.onrender.com` (`/health` and authenticated `/mcp` verified working). Remaining open item: the Google OAuth client was rotated (see the callout in Phase 1 and updated Phase 4/5 below) — Render's `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` env vars and the deployed `/authorize` flow still need to be re-run against the new client.
+
 ## 0. Prerequisite: HTTP transport — ✅ already done
 
 Render, like Railway, runs your app as a long-lived network service — it has no calling process to pipe stdio to, so a stdio-only MCP server can't be hosted there. This was already solved in a prior change:
@@ -20,6 +22,7 @@ A few things that differ from Railway and are worth knowing before you deploy:
 3. **`NODE_ENV=production` breaks the build unless devDependencies are forced:** Render applies every configured env var (including `NODE_ENV=production`, which you want set for the *runtime*) during the *build* step too. `npm ci`/`npm install` treat `NODE_ENV=production` as an implicit `--omit=dev`, silently skipping `devDependencies` — which is where `typescript` and `@types/node` live. The symptom is `tsc` failing with a wall of `TS2591: Cannot find name 'process'/'Buffer'/'node:fs'...` errors, even though the exact same code compiles fine locally. **Fix:** this repo has a committed `.npmrc` with `include=dev`, which forces devDependencies to install on *any* `npm ci`/`npm install` regardless of `NODE_ENV` or what's typed into a platform's dashboard Build Command field — verified locally by running `npm ci` with `NODE_ENV=production` set and confirming `tsc` still succeeds. (`render.yaml`'s `buildCommand` also redundantly passes `--include=dev` as a second safety net.)
 4. **Node version:** Render checks, in order: the `NODE_VERSION` env var, a `.node-version` file, a `.nvmrc` file, then `package.json`'s `engines.node`. This repo's `package.json` now pins `"engines": { "node": ">=20 <25" }` — a bounded range, per Render's own recommendation (an unbounded `>=20` would silently ride up to whatever Node major is newest whenever Render updates its default).
 5. **Health checks:** `healthCheckPath: /health` (already implemented) works identically to Railway's `healthcheckPath` — Render won't route traffic to a new deploy until it passes.
+6. **OAuth client type — must be "Web application", not "Desktop app":** Google's **Desktop app** OAuth client type only supports loopback (`localhost`/`127.0.0.1`) redirect URIs and doesn't let you register arbitrary HTTPS callback URLs in Cloud Console at all. Since Render's `/oauth2callback` is a public HTTPS URL (`https://<service>.onrender.com/oauth2callback`), you need a **Web application**-type OAuth client instead, which requires every redirect URI (including `http://localhost:3000/oauth2callback` for local dev, if still needed) to be explicitly added to that client's **Authorized redirect URIs** allow-list in Google Cloud Console — unlike Desktop clients, Web clients reject anything not on the list with `redirect_uri_mismatch`. If you originally created a Desktop-type client for local dev, you'll need to create a separate Web application client for this deployment (a new `client_id`/`client_secret`, downloaded as a new `credentials.json`) and update `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` everywhere (local `.env` and Render's Environment tab) to match. Any previously-issued `tokens.json` is tied to whichever client requested it, so rotating the client also means re-running the authorize flow (Phase 5) — both locally and on Render.
 
 ## 2. Phase 2 — Persistent storage for OAuth tokens
 
@@ -53,15 +56,17 @@ The server reads/writes two files at runtime (see `src/config.ts`, `src/tokenCry
 3. If deploying via Blueprint, Render will prompt you to fill in a value for every env var marked `sync: false` in `render.yaml` (`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI`, `MCP_AUTH_TOKEN`, `TOKEN_ENCRYPTION_KEY`) before the first deploy runs — see Phase 4 for what to put in each.
 4. Once created, Render assigns a public domain immediately: `https://<service-name>.onrender.com` (no manual "generate domain" step like Railway). You'll need this for `GOOGLE_REDIRECT_URI` in Phase 4/5.
 
+**✅ Done:** the service is live at `https://mcp-server-ziee.onrender.com`.
+
 ## 4. Phase 4 — Environment variables on Render
 
 Set these under the service's **Environment** tab (or via the Blueprint prompts in Phase 3) — never commit them; `.env` stays local-only per `.gitignore`:
 
 | Variable | Value on Render | Notes |
 |---|---|---|
-| `GOOGLE_CLIENT_ID` | from Google Cloud Console | same OAuth client as local dev, or a separate one for prod |
+| `GOOGLE_CLIENT_ID` | from Google Cloud Console | must be a **Web application**-type client, not Desktop — see Phase 1 callout. Can be shared with local dev (as long as both redirect URIs are registered on it) or a separate client for prod. |
 | `GOOGLE_CLIENT_SECRET` | from Google Cloud Console | mark as a "secret" in Render's env var editor |
-| `GOOGLE_REDIRECT_URI` | `https://<your-service>.onrender.com/oauth2callback` | **must change from `localhost`** — see Phase 5 |
+| `GOOGLE_REDIRECT_URI` | `https://mcp-server-ziee.onrender.com/oauth2callback` | **must change from `localhost`** — see Phase 5. If Render's UI rejects editing this because of a "duplicate key" error, edit the existing row in place rather than adding a new one. |
 | `GOOGLE_TOKEN_STORAGE_PATH` | `/data/tokens.json` | already set in `render.yaml`; on the mounted disk (Phase 2) |
 | `TOKEN_ENCRYPTION_KEY` | a generated 32-byte base64 key | generate once locally: `node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"` — don't rely on auto-generated `.token.key`, which won't survive redeploys without living on the disk too |
 | `MCP_SERVER_NAME` | `google-workspace-mcp-server` | already set in `render.yaml` |
@@ -77,11 +82,13 @@ Set these under the service's **Environment** tab (or via the Blueprint prompts 
 
 `npm run authorize` (`src/authorize.ts`) opens a local browser and a temporary HTTP listener on `GOOGLE_REDIRECT_URI` to catch the auth code. On a headless Render instance there's no browser to open, so:
 
-1. Update the OAuth client in Google Cloud Console to add `https://<your-service>.onrender.com/oauth2callback` as an **Authorized redirect URI**.
-2. ✅ Code already handles this: `src/httpServer.ts` exposes `GET /authorize` (redirects to Google's consent screen, gated by `?token=<MCP_AUTH_TOKEN>`) and `GET <GOOGLE_REDIRECT_URI's path>` (exchanges the code, persists the token to the disk via the existing encryption pipeline, and makes the already-running server's Gmail/Docs tools usable immediately — no restart needed). After the first deploy, visit `https://<your-service>.onrender.com/authorize?token=<MCP_AUTH_TOKEN>` in your own browser once, complete consent, and `tokens.json` will be written to `/data` on the disk.
+1. Update the OAuth client in Google Cloud Console to add `https://mcp-server-ziee.onrender.com/oauth2callback` as an **Authorized redirect URI** (on the **Web application**-type client — see Phase 1 callout).
+2. ✅ Code already handles this: `src/httpServer.ts` exposes `GET /authorize` (redirects to Google's consent screen, gated by `?token=<MCP_AUTH_TOKEN>`) and `GET <GOOGLE_REDIRECT_URI's path>` (exchanges the code, persists the token to the disk via the existing encryption pipeline, and makes the already-running server's Gmail/Docs tools usable immediately — no restart needed). After the first deploy, visit `https://mcp-server-ziee.onrender.com/authorize?token=<MCP_AUTH_TOKEN>` in your own browser once, complete consent, and `tokens.json` will be written to `/data` on the disk.
 3. Alternative — run `npm run authorize` **locally** as today, then copy the resulting encrypted `tokens.json` onto the Render disk via **Shell** access (Render Dashboard > service > Shell tab, available on paid plans) — `cat`/paste the file contents into `/data/tokens.json`, or use `scp`-equivalent tooling if you prefer. More manual than option 2; only useful if you don't want to expose `/authorize` at all, even temporarily.
 
 Either way, treat the token file, `MCP_AUTH_TOKEN`, and `TOKEN_ENCRYPTION_KEY` as production secrets.
+
+> **Client rotation note:** if the OAuth client's `client_id`/`client_secret` ever change (e.g. switching from a Desktop-type client to a Web application-type client, as happened during this deployment), any token minted under the old client stops refreshing under the new one. After updating `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` on Render, you must redo step 2 above (re-visit `/authorize?token=...`) even if `/data/tokens.json` already exists from a prior authorization — the old file will cause `REAUTH_REQUIRED`/refresh errors until overwritten by a fresh consent flow against the new client.
 
 ## 6. Phase 6 — Networking, security & rate limiting review
 
@@ -118,8 +125,8 @@ Once deployed, update `mcp.json` to point at the Render URL instead of a local `
 
 ## 9. Phase 9 — Post-deploy validation
 
-1. `curl https://<your-service>.onrender.com/health` → expect `200`.
-2. Complete the Phase 5 authorize flow; confirm the token persisted by checking Render's Shell tab (`ls /data`) or simply by calling a Gmail/Docs tool without re-authorizing.
+1. ✅ `curl https://mcp-server-ziee.onrender.com/health` → `200` confirmed. Authenticated `/mcp` requests with `MCP_AUTH_TOKEN` also verified working.
+2. ⬜ Complete the Phase 5 authorize flow against the current (Web application) OAuth client; confirm the token persisted by checking Render's Shell tab (`ls /data`) or simply by calling a Gmail/Docs tool without re-authorizing. **Still pending** as of the client rotation in Phase 1/5 — the client_id/secret env vars need updating on Render first.
 3. From an MCP client configured per Phase 8, call `server_metrics` — confirms the transport, auth header, and tool registry all work end-to-end.
 4. Call `gmail_create_draft` (safe — doesn't send) and `docs_create` to confirm the Google API calls succeed from Render's egress IPs.
 5. Trigger a redeploy (e.g. push an empty commit) and re-check `/health` and `server_metrics` to confirm the disk-backed token survived the restart without needing to re-authorize.
@@ -145,10 +152,11 @@ This is a single-user personal integration server with light, bursty traffic (ra
 - [x] Phase 0/1: HTTP transport + `/health` + `MCP_AUTH_TOKEN` auth middleware — already implemented, no Render-specific code changes needed
 - [x] `render.yaml` added (Blueprint: web service, disk, health check, env var declarations)
 - [x] `package.json` `engines.node` bounded to `>=20 <25` per Render's recommendation
-- [ ] Phase 3: Deploy the Blueprint (or create the service manually) on Render — needs your Render account (manual)
-- [ ] Phase 4: Fill in the `sync: false` secrets (`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI`, `MCP_AUTH_TOKEN`, `TOKEN_ENCRYPTION_KEY`) (manual)
-- [ ] Phase 5: Update Google OAuth client redirect URI; complete one-time authorize against the deployed URL (manual)
+- [x] Phase 3: Service deployed and live at `https://mcp-server-ziee.onrender.com`
+- [x] Phase 4 (initial): Secrets filled in for the original OAuth client
+- [ ] Phase 4 (rotation): OAuth client was rotated to a Web application-type client (see Phase 1 callout) — **update `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` on Render's Environment tab** to the new values (manual, not yet done)
+- [ ] Phase 5: Add both redirect URIs to the new Web application OAuth client in Google Cloud Console; re-complete the one-time authorize flow against the deployed URL now that the client rotated (manual)
 - [ ] Phase 6: Confirm auth token, rate limits, account allowlist, and instance type (not Free) are production-appropriate (manual)
 - [ ] Phase 7: Confirm Render auto-deploy is enabled (manual; CI build check already in place)
 - [ ] Phase 8: Update `mcp.json` to point at the Render URL (manual, once you have the domain)
-- [ ] Phase 9: Run through post-deploy validation steps (manual, requires a live deployment)
+- [x] Phase 9 (partial): `/health` and authenticated `/mcp` verified; token persistence/tool-call validation still pending re-authorization (see Phase 5 rotation note)
